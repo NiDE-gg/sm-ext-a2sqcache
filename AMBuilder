@@ -1,0 +1,29 @@
+# vim: set sts=2 ts=8 sw=2 tw=99 et ft=python:
+import os
+
+if not "SM" in globals():
+	SM = Extension
+
+projectName = 'a2sqcache'
+
+project = SM.HL2Project(builder, projectName + '.ext')
+project.sources += [
+  'extension.cpp',
+  '../../public/smsdk_ext.cpp',
+  '../../public/CDetour/detours.cpp',
+  '../../public/asm/asm.c',
+  '../../public/libudis86/decode.c',
+  '../../public/libudis86/itab.c',
+  '../../public/libudis86/syn-att.c',
+  '../../public/libudis86/syn-intel.c',
+  '../../public/libudis86/syn.c',
+  '../../public/libudis86/udis86.c',
+]
+project.compiler.defines += ['HAVE_STRING_H'];
+
+for sdk_name in SM.sdks:
+  sdk = SM.sdks[sdk_name]
+
+  binary = SM.HL2Config(project, projectName + '.ext', sdk)
+
+SM.extensions += builder.Add(project)
