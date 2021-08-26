@@ -30,6 +30,7 @@
  */
 
 #include "extension.h"
+#include "extensionHelper.h"
 #include "CDetour/detours.h"
 #include "steam/steam_gameserver.h"
 #include "sm_namehashset.h"
@@ -82,9 +83,11 @@ A2SQCacheTimer g_A2SQCacheTimer;
 
 SMEXT_LINK(&g_A2SQCache);
 
-ConVar g_SvLogging("sv_qcache_logging", "0", FCVAR_NOTIFY, "Log connection checks.");
-ConVar g_SvGameDesc("sv_gamedesc_override", "default", FCVAR_NOTIFY, "Overwrite the default game description. Set to 'default' to keep default description.");
-ConVar g_SvMapName("sv_mapname_override", "default", FCVAR_NOTIFY, "Overwrite the map name. Set to 'default' to keep default name.");
+ConVar *g_SvLogging = CreateConVar("sv_qcache_logging", "0", FCVAR_NOTIFY, "Log connection checks.");
+ConVar *g_SvGameDesc = CreateConVar("sv_gamedesc_override", "default", FCVAR_NOTIFY, "Overwrite the default game description. Set to 'default' to keep default description.");
+ConVar *g_SvMapName = CreateConVar("sv_mapname_override", "default", FCVAR_NOTIFY, "Overwrite the map name. Set to 'default' to keep default name.");
+ConVar *g_SvCountBotsInfo = CreateConVar("sv_count_bots_info", "1", FCVAR_NOTIFY, "Display bots as players in the a2s_info server query. Enable = '1', Disable = '0'");
+ConVar *g_SvCountBotsPlayer = CreateConVar("sv_count_bots_player", "0", FCVAR_NOTIFY, "Display bots as players in the a2s_player server query. Enable = '1', Disable = '0'");
 ConVar *g_pSvVisibleMaxPlayers;
 ConVar *g_pSvTags;
 
@@ -212,15 +215,15 @@ void UpdateQueryCache()
 	CQueryCache::CInfo &info = g_QueryCache.info;
 	info.aHostNameLen = strlcpy(info.aHostName, iserver->GetName(), sizeof(info.aHostName));
 
-	if(strcmp(g_SvMapName.GetString(), "default") == 0)
+	if(strcmp(g_SvMapName->GetString(), "default") == 0)
 		info.aMapNameLen = strlcpy(info.aMapName, iserver->GetMapName(), sizeof(info.aMapName));
 	else
-		info.aMapNameLen = strlcpy(info.aMapName, g_SvMapName.GetString(), sizeof(info.aMapName));
+		info.aMapNameLen = strlcpy(info.aMapName, g_SvMapName->GetString(), sizeof(info.aMapName));
 
-	if(strcmp(g_SvGameDesc.GetString(), "default") == 0)
+	if(strcmp(g_SvGameDesc->GetString(), "default") == 0)
 		info.aGameDescriptionLen = strlcpy(info.aGameDescription, gamedll->GetGameDescription(), sizeof(info.aGameDescription));
 	else
-		info.aGameDescriptionLen = strlcpy(info.aGameDescription, g_SvGameDesc.GetString(), sizeof(info.aGameDescription));
+		info.aGameDescriptionLen = strlcpy(info.aGameDescription, g_SvGameDesc->GetString(), sizeof(info.aGameDescription));
 
 	if(g_pSvVisibleMaxPlayers->GetInt() >= 0)
 		info.nMaxClients = g_pSvVisibleMaxPlayers->GetInt();
@@ -285,7 +288,10 @@ void UpdateQueryCache()
 
 	info_cache[pos++] = info.nMaxClients;
 
-	info_cache[pos++] = 0;//info.nFakeClients;
+	if (g_SvCountBotsInfo->GetInt())
+		info_cache[pos++] = 0;
+	else
+		info_cache[pos++] = info.nFakeClients;
 
 	info_cache[pos++] = info.nServerType;
 
@@ -337,7 +343,7 @@ void UpdateQueryCache()
 	for(int i = 1; i <= SM_MAXPLAYERS; i++)
 	{
 		const CQueryCache::CPlayer &player = g_QueryCache.players[i];
-		if(!player.active)
+		if(!player.active || (player.fake && !g_SvCountBotsPlayer->GetInt()))
 			continue;
 
 		players_cache[pos++] = players_cache[5]; // Index | byte | Index of player chunk starting from 0.
@@ -491,6 +497,8 @@ bool A2SQCache::SDK_OnLoad(char *error, size_t maxlen, bool late)
 
 	playerhelpers->AddClientListener(this);
 
+	AutoExecConfig(g_pCVar, true);
+
 	return true;
 }
 
@@ -593,7 +601,7 @@ void A2SQCache::SDK_OnAllLoaded()
 	{
 		int client = slot + 1;
 		IClient *pClient = iserver->GetClient(slot);
-		if(!pClient)
+		if(!pClient || !pClient->IsConnected())
 			continue;
 
 		CQueryCache::CPlayer &player = g_QueryCache.players[client];
@@ -687,7 +695,7 @@ void A2SQCacheEvents::FireGameEvent(IGameEvent *event)
 		const bool bot = event->GetBool("bot");
 		const char *name = event->GetString("name");
 
-		if (g_SvLogging.GetInt())
+		if (g_SvLogging->GetInt())
 			g_pSM->LogMessage(myself, "player_connect(client=%d, userid=%d, bot=%d, name=%s)", client, userid, bot, name);
 
 		if(client >= 1 && client <= SM_MAXPLAYERS)
@@ -709,7 +717,7 @@ void A2SQCacheEvents::FireGameEvent(IGameEvent *event)
 
 			g_UserIDtoClientMap[userid] = client;
 
-			if (g_SvLogging.GetInt())
+			if (g_SvLogging->GetInt())
 				g_pSM->LogMessage(myself, "\tCPlayer(active=%d, fake=%d, pClient=%p, name=%s)", player.active, player.fake, player.pClient, player.name);
 		}
 
@@ -720,13 +728,13 @@ void A2SQCacheEvents::FireGameEvent(IGameEvent *event)
 		const int client = g_UserIDtoClientMap[userid];
 		g_UserIDtoClientMap[userid] = 0;
 
-		if (g_SvLogging.GetInt())
+		if (g_SvLogging->GetInt())
 			g_pSM->LogMessage(myself, "player_disconnect(userid=%d, client=%d)", userid, client);
 
 		if(client >= 1 && client <= SM_MAXPLAYERS)
 		{
 			CQueryCache::CPlayer &player = g_QueryCache.players[client];
-			if (g_SvLogging.GetInt())
+			if (g_SvLogging->GetInt())
 				g_pSM->LogMessage(myself, "\tCPlayer(active=%d, fake=%d, pClient=%p, name=%s)", player.active, player.fake, player.pClient, player.name);
 
 			if(player.active)
