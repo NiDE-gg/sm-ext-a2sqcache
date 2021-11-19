@@ -34,6 +34,11 @@
 #include "CDetour/detours.h"
 #include "steam/steam_gameserver.h"
 #include "sm_namehashset.h"
+#include "proto_oob.h"
+#include "protocol.h"
+#include "inetworksystem.h"
+#include <strtools.h>
+#include <utlbuffer.h>
 #include <sourcehook.h>
 #include <bitbuf.h>
 #include <netadr.h>
@@ -88,8 +93,12 @@ ConVar *g_SvGameDesc = CreateConVar("sv_gamedesc_override", "default", FCVAR_NOT
 ConVar *g_SvMapName = CreateConVar("sv_mapname_override", "default", FCVAR_NOTIFY, "Overwrite the map name. Set to 'default' to keep default name.");
 ConVar *g_SvCountBotsInfo = CreateConVar("sv_count_bots_info", "1", FCVAR_NOTIFY, "Display bots as players in the a2s_info server query. Enable = '1', Disable = '0'");
 ConVar *g_SvCountBotsPlayer = CreateConVar("sv_count_bots_player", "0", FCVAR_NOTIFY, "Display bots as players in the a2s_player server query. Enable = '1', Disable = '0'");
-ConVar *g_pSvVisibleMaxPlayers;
-ConVar *g_pSvTags;
+#if SOURCE_ENGINE < SE_CSGO
+ConVar *g_SvHostNameStore = CreateConVar("host_name_store", "1", FCVAR_NOTIFY, "Whether hostname is recorded in game events and GOTV.");
+#endif
+ConVar *g_pSvVisibleMaxPlayers = NULL;
+ConVar *g_pSvTags = NULL;
+ConVar *g_pSvEnableOldQueries = NULL;
 
 IGameConfig *g_pGameConf = NULL;
 IGameEventManager2 *g_pGameEvents = NULL;
@@ -156,53 +165,48 @@ struct CQueryCache
 {
 	struct CPlayer
 	{
-		bool active;
-		bool fake;
-		int userid;
-		IClient *pClient;
-		char name[MAX_PLAYER_NAME_LENGTH];
-		unsigned nameLen;
-		int32_t score;
-		double time;
+		bool active = false;
+		bool fake = false;
+		int userid = 0;
+		IClient *pClient = NULL;
+		char name[MAX_PLAYER_NAME_LENGTH] = "\0";
+		unsigned nameLen = 0;
+		int32_t score = 0;
+		double time = 0.0;
 	} players[SM_MAXPLAYERS + 1];
 
 	struct CInfo
 	{
 		uint8_t nProtocol = 17; // Protocol | byte | Protocol version used by the server.
-		char aHostName[255]; // Name | string | Name of the server.
-		uint8_t aHostNameLen;
+		char aHostName[255] = "\0"; // Name | string | Name of the server.
+		uint8_t aHostNameLen = 0;
 		char aMapName[255]; // Map | string | Map the server has currently loaded.
-		uint8_t aMapNameLen;
+		uint8_t aMapNameLen = 0;
 		char aGameDir[255]; // Folder | string | Name of the folder containing the game files.
-		uint8_t aGameDirLen;
-		char aGameDescription[255]; // Game | string | Full name of the game.
-		uint8_t aGameDescriptionLen;
-		uint16_t iSteamAppID; // ID | short | Steam Application ID of game.
+		uint8_t aGameDirLen = 0;
+		char aGameDescription[255] = "\0"; // Game | string | Full name of the game.
+		uint8_t aGameDescriptionLen = 0;
+		uint16_t iSteamAppID = 0; // ID | short | Steam Application ID of game.
 		uint8_t nNumClients = 0; // Players | byte | Number of players on the server.
-		uint8_t nMaxClients; // Max. Players | byte | Maximum number of players the server reports it can hold.
+		uint8_t nMaxClients = 0; // Max. Players | byte | Maximum number of players the server reports it can hold.
 		uint8_t nFakeClients = 0; // Bots | byte | Number of bots on the server.
 		uint8_t nServerType = 'd'; // Server type | byte | Indicates the type of server: 'd' for a dedicated server, 'l' for a non-dedicated server, 'p' for a SourceTV relay (proxy)
 		uint8_t nEnvironment = 'l'; // Environment | byte | Indicates the operating system of the server: 'l' for Linux, 'w' for Windows, 'm' or 'o' for Mac (the code changed after L4D1)
-		uint8_t nPassword; // Visibility | byte | Indicates whether the server requires a password: 0 for public, 1 for private
-		uint8_t bIsSecure; // VAC | byte | Specifies whether the server uses VAC: 0 for unsecured, 1 for secured
-		char aVersion[40]; // Version | string | Version of the game installed on the server.
-		uint8_t aVersionLen;
+		uint8_t nPassword = 0; // Visibility | byte | Indicates whether the server requires a password: 0 for public, 1 for private
+		uint8_t bIsSecure = 0; // VAC | byte | Specifies whether the server uses VAC: 0 for unsecured, 1 for secured
+		char aVersion[40] = "\0"; // Version | string | Version of the game installed on the server.
+		uint8_t aVersionLen = 0;
 		uint8_t nNewFlags = 0; // Extra Data Flag (EDF) | byte | If present, this specifies which additional data fields will be included.
-		uint16_t iUDPPort; // EDF & 0x80 -> Port | short | The server's game port number.
-		uint64_t iSteamID; // EDF & 0x10 -> SteamID | long long | Server's SteamID.
-		uint16_t iHLTVUDPPort; // EDF & 0x40 -> Port | short | Spectator port number for SourceTV.
-		char aHLTVName[255]; // EDF & 0x40 -> Name | string | Name of the spectator server for SourceTV.
-		uint8_t aHLTVNameLen;
-		char aKeywords[255]; // EDF & 0x20 -> Keywords | string | Tags that describe the game according to the server (for future use.) (sv_tags)
-		uint8_t aKeywordsLen;
-		uint64_t iGameID; // EDF & 0x01 -> GameID | long long | The server's 64-bit GameID. If this is present, a more accurate AppID is present in the low 24 bits. The earlier AppID could have been truncated as it was forced into 16-bit storage.
+		uint16_t iUDPPort = 0; // EDF & S2A_EXTRA_DATA_HAS_GAME_PORT -> Port | short | The server's game port number.
+		uint64_t iSteamID = 0; // EDF & S2A_EXTRA_DATA_HAS_STEAMID -> SteamID | long long | Server's SteamID.
+		uint16_t iHLTVUDPPort = 0; // EDF & S2A_EXTRA_DATA_HAS_SPECTATOR_DATA -> Port | short | Spectator port number for SourceTV.
+		char aHLTVName[255] = "\0"; // EDF & S2A_EXTRA_DATA_HAS_SPECTATOR_DATA -> Name | string | Name of the spectator server for SourceTV.
+		uint8_t aHLTVNameLen = 0;
+		char aKeywords[255] = "\0"; // EDF & S2A_EXTRA_DATA_HAS_GAMETAG_DATA -> Keywords | string | Tags that describe the game according to the server (for future use.) (sv_tags)
+		uint8_t aKeywordsLen = 0;
+		uint64_t iGameID = 0; // EDF & S2A_EXTRA_DATA_GAMEID -> GameID | long long | The server's 64-bit GameID. If this is present, a more accurate AppID is present in the low 24 bits. The earlier AppID could have been truncated as it was forced into 16-bit storage.
 	} info;
 
-	uint8_t info_cache[sizeof(CInfo)] = {0xFF, 0xFF, 0xFF, 0xFF, 'I'};
-	uint16_t info_cache_len;
-
-	uint8_t players_cache[4+1+1+SM_MAXPLAYERS*(1+MAX_PLAYER_NAME_LENGTH+4+4)] = {0xFF, 0xFF, 0xFF, 0xFF, 'D', 0};
-	uint16_t players_cache_len;
 } g_QueryCache;
 
 class CBaseClient;
@@ -213,7 +217,8 @@ void UpdateQueryCache()
 {
 	// A2S_INFO
 	CQueryCache::CInfo &info = g_QueryCache.info;
-	info.aHostNameLen = strlcpy(info.aHostName, iserver->GetName(), sizeof(info.aHostName));
+
+	info.aHostNameLen = strlcpy(info.aHostName, g_SvHostNameStore->GetBool() ? iserver->GetName() : gamedll->GetGameDescription(), sizeof(info.aHostName));
 
 	if(strcmp(g_SvMapName->GetString(), "default") == 0)
 		info.aMapNameLen = strlcpy(info.aMapName, iserver->GetMapName(), sizeof(info.aMapName));
@@ -229,16 +234,32 @@ void UpdateQueryCache()
 		info.nMaxClients = g_pSvVisibleMaxPlayers->GetInt();
 	else
 		info.nMaxClients = iserver->GetMaxClients();
+
+	// NOTE: This key's meaning is changed in the new version. Since we send gameport and specport,
+	// it knows whether we're running SourceTV or not. Then it only needs to know if we're a dedicated or listen server.
+	if ( iserver->IsDedicated() )
+		info.nServerType = 'd'; // d = dedicated server
+	else
+		info.nServerType = 'l'; // l = listen server
+
+#if defined(_WIN32)
+	info.nEnvironment = 'w';
+#elif defined(OSX)
+	info.nEnvironment = 'm';
+#else // LINUX?
+	info.nEnvironment = 'l';
+#endif
+
 	info.nPassword = iserver->GetPassword() ? 1 : 0;
 	info.bIsSecure = true;
 
-	if(!(info.nNewFlags & 0x10) && engine->GetGameServerSteamID())
+	if(!(info.nNewFlags & S2A_EXTRA_DATA_HAS_STEAMID) && engine->GetGameServerSteamID())
 	{
 		info.iSteamID = engine->GetGameServerSteamID()->ConvertToUint64();
-		info.nNewFlags |= 0x10;
+		info.nNewFlags |= S2A_EXTRA_DATA_HAS_STEAMID;
 	}
 
-	if(!(info.nNewFlags & 0x40) && hltvdirector->IsActive()) // tv_name can't change anymore
+	if(!(info.nNewFlags & S2A_EXTRA_DATA_HAS_SPECTATOR_DATA) && hltvdirector->IsActive()) // tv_name can't change anymore
 	{
 #if SOURCE_ENGINE >= SE_CSGO
 		hltv = hltvdirector->GetHLTVServer(0);
@@ -252,167 +273,259 @@ void UpdateQueryCache()
 			{
 				info.iHLTVUDPPort = ihltvserver->GetUDPPort();
 				info.aHLTVNameLen = strlcpy(info.aHLTVName, ihltvserver->GetName(), sizeof(info.aHLTVName));
-				info.nNewFlags |= 0x40;
+				info.nNewFlags |= S2A_EXTRA_DATA_HAS_SPECTATOR_DATA;
 			}
 		}
 	}
 
 	info.aKeywordsLen = strlcpy(info.aKeywords, g_pSvTags->GetString(), sizeof(info.aKeywords));
 	if(info.aKeywordsLen)
-		info.nNewFlags |= 0x20;
+		info.nNewFlags |= S2A_EXTRA_DATA_HAS_GAMETAG_DATA;
 	else
-		info.nNewFlags &= ~0x20;
+		info.nNewFlags &= ~S2A_EXTRA_DATA_HAS_GAMETAG_DATA;
+}
 
-
-	uint8_t *info_cache = g_QueryCache.info_cache;
-	uint16_t pos = 5; // header: FF FF FF FF I
-
-	info_cache[pos++] = info.nProtocol;
-
-	memcpy(&info_cache[pos], info.aHostName, info.aHostNameLen + 1);
-	pos += info.aHostNameLen + 1;
-
-	memcpy(&info_cache[pos], info.aMapName, info.aMapNameLen + 1);
-	pos += info.aMapNameLen + 1;
-
-	memcpy(&info_cache[pos], info.aGameDir, info.aGameDirLen + 1);
-	pos += info.aGameDirLen + 1;
-
-	memcpy(&info_cache[pos], info.aGameDescription, info.aGameDescriptionLen + 1);
-	pos += info.aGameDescriptionLen + 1;
-
-	*(uint16_t *)&info_cache[pos] = info.iSteamAppID;
-	pos += 2;
-
-	info_cache[pos++] = info.nNumClients;
-
-	info_cache[pos++] = info.nMaxClients;
-
-	if (g_SvCountBotsInfo->GetInt())
-		info_cache[pos++] = 0;
-	else
-		info_cache[pos++] = info.nFakeClients;
-
-	info_cache[pos++] = info.nServerType;
-
-	info_cache[pos++] = info.nEnvironment;
-
-	info_cache[pos++] = info.nPassword;
-
-	info_cache[pos++] = info.bIsSecure;
-
-	memcpy(&info_cache[pos], info.aVersion, info.aVersionLen + 1);
-	pos += info.aVersionLen + 1;
-
-	info_cache[pos++] = info.nNewFlags;
-
-	if(info.nNewFlags & 0x80) {
-		*(uint16_t *)&info_cache[pos] = info.iUDPPort;
-		pos += 2;
+bool RequireValidChallenge( const netadr_t &adr )
+{
+	if ( g_pSvEnableOldQueries->GetBool() == true )
+	{
+		return false; // don't enforce challenge numbers
 	}
 
-	if(info.nNewFlags & 0x10) {
-		*(uint64_t *)&info_cache[pos] = info.iSteamID;
-		pos += 8;
+	return true;
+}
+
+bool ValidInfoChallenge( const netadr_t & adr, const char *nugget )
+{
+	if ( !iserver->IsActive() )            // Must be running a server.
+		return false ;
+
+	if ( !iserver->IsMultiplayer() )   // ignore in single player
+		return false ;
+
+	if ( RequireValidChallenge( adr ) )
+	{
+		if ( Q_stricmp( nugget, A2S_KEY_STRING ) ) // if the string isn't equal then fail out
+		{
+			return false;
+		}
 	}
 
-	if(info.nNewFlags & 0x40) {
-		*(uint16_t *)&info_cache[pos] = info.iHLTVUDPPort;
-		pos += 2;
+	return true;
+}
 
-		memcpy(&info_cache[pos], info.aHLTVName, info.aHLTVNameLen + 1);
-		pos += info.aHLTVNameLen + 1;
+void SendA2S_PlayerChallenge(netpacket_t * packet, int32_t realChallengeNr)
+{
+	struct sockaddr	addr;
+	packet->from.ToSockadr ( &addr );
+
+	CUtlBuffer buf;
+	buf.EnsureCapacity( MAX_ROUTABLE_PAYLOAD );
+
+	buf.PutUnsignedInt( LittleDWord( CONNECTIONLESS_HEADER ) );
+	buf.PutUnsignedChar( S2C_CHALLENGE );
+	buf.PutInt( realChallengeNr );
+
+	sendto(g_ServerUDPSocket, (const char*)buf.Base(), buf.TellPut(), 0, &addr, sizeof(addr));
+}
+
+void SendA2S_Player(netpacket_t * packet)
+{
+	struct sockaddr	addr;
+	packet->from.ToSockadr ( &addr );
+
+	CUtlBuffer buf;
+	buf.EnsureCapacity( MAX_ROUTABLE_PAYLOAD );
+
+	buf.PutUnsignedInt( LittleDWord( CONNECTIONLESS_HEADER ) );
+	buf.PutUnsignedChar( S2A_PLAYER );
+
+	unsigned char nPlayerCount = 0;
+	for(int i = 1; i <= SM_MAXPLAYERS; i++)
+	{
+		const CQueryCache::CPlayer &player = g_QueryCache.players[i];
+		if(!player.active || (player.fake && !g_SvCountBotsPlayer->GetInt()))
+			continue;
+		nPlayerCount++;
 	}
 
-	if(info.nNewFlags & 0x20) {
-		memcpy(&info_cache[pos], info.aKeywords, info.aKeywordsLen + 1);
-		pos += info.aKeywordsLen + 1;
-	}
+	// Number of players
+	buf.PutUnsignedChar( nPlayerCount );
 
-	if(info.nNewFlags & 0x01) {
-		*(uint64_t *)&info_cache[pos] = info.iGameID;
-		pos += 8;
-	}
-
-	g_QueryCache.info_cache_len = pos;
-
-
-	// A2S_PLAYER
-	uint8_t *players_cache = g_QueryCache.players_cache;
-	pos = 6; // header: FF FF FF FF D 0[numplayers]
+	unsigned char nPlayerUserID = 0;
 	for(int i = 1; i <= SM_MAXPLAYERS; i++)
 	{
 		const CQueryCache::CPlayer &player = g_QueryCache.players[i];
 		if(!player.active || (player.fake && !g_SvCountBotsPlayer->GetInt()))
 			continue;
 
-		players_cache[pos++] = players_cache[5]; // Index | byte | Index of player chunk starting from 0.
-		players_cache[5]++; // Players | byte | Number of players whose information was gathered.
-		memcpy(&players_cache[pos], player.name, player.nameLen + 1); // Name | string | Name of the player.
-		pos += player.nameLen + 1;
-		*(int32_t *)&players_cache[pos] = player.score; // Score | long | Player's score (usually "frags" or "kills".)
-		pos += 4;
-		*(float *)&players_cache[pos] = *net_time - player.time; // Duration | float | Time (in seconds) player has been connected to the server.
-		pos += 4;
+		// User ID
+		buf.PutUnsignedChar( nPlayerUserID );
+		// Player Name
+		buf.PutString( player.name );
+		// Player Score
+		buf.PutInt( player.score );
+		// Player Duration
+		buf.PutFloat( *net_time - player.time );
+
+		nPlayerUserID++;
 	}
 
-	g_QueryCache.players_cache_len = pos;
+	sendto(g_ServerUDPSocket, (const char *)buf.Base(), buf.TellPut(), 0, &addr, sizeof(addr));
+}
+
+void SendA2S_Info(netpacket_t * packet)
+{
+	struct sockaddr	addr;
+	packet->from.ToSockadr ( &addr );
+
+	CUtlBuffer buf;
+	buf.EnsureCapacity( MAX_ROUTABLE_PAYLOAD );
+
+	buf.PutUnsignedInt( LittleDWord( CONNECTIONLESS_HEADER ) );
+	buf.PutUnsignedChar( S2A_INFO_SRC );
+	buf.PutUnsignedChar( 17 ); // Hardcoded protocol version number
+	buf.PutString( g_SvHostNameStore->GetBool() ? iserver->GetName() : gamedll->GetGameDescription() );
+	buf.PutString( strcmp(g_SvMapName->GetString(), "default") == 0 ? iserver->GetMapName() : g_SvMapName->GetString());
+	buf.PutString( smutils->GetGameFolderName() );
+	buf.PutString( strcmp(g_SvGameDesc->GetString(), "default") == 0 ? gamedll->GetGameDescription() : g_SvGameDesc->GetString() );
+
+	// The next field is a 16-bit version of the AppID.  If our AppID < 65536,
+	// then let's go ahead and put in in there, to maximize compatibility
+	// with old clients who might be only using this field but not the new one.
+	// However, if our AppID won't fit, there's no way we can be compatible,
+	// anyway, so just put in a zero, which is better than a bogus AppID.
+	buf.PutShort( LittleWord( g_QueryCache.info.iSteamAppID ) );
+
+	// player info
+	buf.PutUnsignedChar( g_QueryCache.info.nNumClients );
+	buf.PutUnsignedChar( g_pSvVisibleMaxPlayers->GetInt() >= 0 ? g_pSvVisibleMaxPlayers->GetInt() : iserver->GetMaxClients() );
+	buf.PutUnsignedChar( g_SvCountBotsInfo->GetInt() ? 0 : g_QueryCache.info.nFakeClients );
+
+	// NOTE: This key's meaning is changed in the new version. Since we send gameport and specport,
+	// it knows whether we're running SourceTV or not. Then it only needs to know if we're a dedicated or listen server.
+	buf.PutUnsignedChar( g_QueryCache.info.nServerType );
+
+	buf.PutUnsignedChar( g_QueryCache.info.nEnvironment );
+
+	// Password?
+	buf.PutUnsignedChar( iserver->GetPassword() ? 1 : 0 );
+
+	// buf.PutUnsignedChar( Steam3Server().BSecure() ? 1 : 0 );
+
+	// Secure?
+	buf.PutUnsignedChar( 1 );
+
+	buf.PutString( g_QueryCache.info.aVersion );
+
+	//
+	// NEW DATA.
+	//
+
+	buf.PutUnsignedChar( g_QueryCache.info.nNewFlags );
+
+	// Write the rest of the data.
+	if ( g_QueryCache.info.nNewFlags & S2A_EXTRA_DATA_HAS_GAME_PORT )
+	{
+		buf.PutShort( LittleWord( iserver->GetUDPPort() ) );
+	}
+
+	if ( g_QueryCache.info.nNewFlags & S2A_EXTRA_DATA_HAS_STEAMID )
+	{
+		buf.PutShort( LittleWord( g_QueryCache.info.iSteamID ) );
+	}
+
+	if ( g_QueryCache.info.nNewFlags & S2A_EXTRA_DATA_HAS_SPECTATOR_DATA )
+	{
+		buf.PutShort( LittleWord( g_QueryCache.info.iHLTVUDPPort ) );
+		buf.PutString( g_SvHostNameStore->GetBool() ? iserver->GetName() : g_QueryCache.info.aHLTVName );
+	}
+
+	if ( g_QueryCache.info.nNewFlags & S2A_EXTRA_DATA_HAS_GAMETAG_DATA )
+	{
+		buf.PutString( g_QueryCache.info.aKeywords );
+	}
+
+	if ( g_QueryCache.info.nNewFlags & S2A_EXTRA_DATA_GAMEID )
+	{
+		// !FIXME! Is there a reason we aren't using the other half
+		// of this field?  Shouldn't we put the game mod ID in there, too?
+		// We have the game dir.
+		// buf.PutInt64( LittleQWord( CGameID( appIdResponse ).ToUint64() ) );
+		buf.PutInt64( LittleQWord( g_QueryCache.info.iGameID ) );
+	}
+
+	sendto(g_ServerUDPSocket, (const char *)buf.Base(), buf.TellPut(), 0, &addr, sizeof(addr));
 }
 
 bool Hook_ProcessConnectionlessPacket(netpacket_t * packet)
 {
-	if(packet->size >= 25 && packet->data[4] == 'T')
+	bf_read msg = packet->message;	// handy shortcut 
+
+	char c = msg.ReadChar();
+
+	switch ( c )
 	{
-		if(!CIPRateLimit__CheckIP(s_queryRateChecker, packet->from))
+		case 0:
 		{
+			if(!CIPRateLimit__CheckIP(s_queryRateChecker, packet->from))
+			{
+				RETURN_META_VALUE(MRES_SUPERCEDE, false);
+			}
+
 			RETURN_META_VALUE(MRES_SUPERCEDE, false);
+			break;
 		}
-
-		sockaddr_in to;
-		to.sin_family = AF_INET;
-		to.sin_port = packet->from.port;
-		to.sin_addr.s_addr = *(int32_t *)&packet->from.ip;
-
-		sendto(g_ServerUDPSocket, g_QueryCache.info_cache, g_QueryCache.info_cache_len, 0, (sockaddr *)&to, sizeof(to));
-
-		RETURN_META_VALUE(MRES_SUPERCEDE, true);
-	}
-
-	if((packet->size == 5 || packet->size == 9) && packet->data[4] == 'U')
-	{
-		if(!CIPRateLimit__CheckIP(s_queryRateChecker, packet->from))
+		case A2S_INFO:
 		{
-			RETURN_META_VALUE(MRES_SUPERCEDE, false);
-		}
+			if(!CIPRateLimit__CheckIP(s_queryRateChecker, packet->from))
+			{
+				RETURN_META_VALUE(MRES_SUPERCEDE, false);
+			}
 
-		sockaddr_in to;
-		to.sin_family = AF_INET;
-		to.sin_port = packet->from.port;
-		to.sin_addr.s_addr = *(int32_t *)&packet->from.ip;
+			// Validate challenge
+			char nugget[ 64 ];
+			if ( !msg.ReadString( nugget, sizeof( nugget ) ) )
+				RETURN_META_VALUE(MRES_SUPERCEDE, true);
+			if ( !ValidInfoChallenge( packet->from, nugget ) )
+				RETURN_META_VALUE(MRES_SUPERCEDE, true);
 
-		int32_t challengeNr = -1;
-		if(packet->size == 9)
-			challengeNr = *(int32_t *)&packet->data[5];
+			SendA2S_Info(packet);
 
-		/* TODO
-		 * This is a complete nonsense challenge as it doesn't offer any protection at all.
-		 * The point of this challenge is to stop spoofed source UDP DDoS reflection attacks,
-		 * so it doesn't really matter if one single server out of thousands doesn't
-		 * implement this correctly. If you do happen to use this on thousands of servers
-		 * though then please do implement it correctly.
-		 */
-		int32_t realChallengeNr = *(int32_t *)&packet->from.ip ^ 0x55AADD88;
-		if(challengeNr != realChallengeNr)
-		{
-			uint8_t response[9] = {0xFF, 0xFF, 0xFF, 0xFF, 'A'};
-			*(int32_t *)&response[5] = realChallengeNr;
-			sendto(g_ServerUDPSocket, response, sizeof(response), 0, (sockaddr *)&to, sizeof(to));
 			RETURN_META_VALUE(MRES_SUPERCEDE, true);
+			break;
 		}
+		case A2S_PLAYER:
+		{
+			if(!CIPRateLimit__CheckIP(s_queryRateChecker, packet->from))
+			{
+				RETURN_META_VALUE(MRES_SUPERCEDE, false);
+			}
 
-		sendto(g_ServerUDPSocket, g_QueryCache.players_cache, g_QueryCache.players_cache_len, 0, (sockaddr *)&to, sizeof(to));
+			int32_t challengeNr = -1;
+			if(packet->size == 9)
+				challengeNr = *(int32_t *)&packet->data[5];
 
-		RETURN_META_VALUE(MRES_SUPERCEDE, true);
+			/* TODO
+			* This is a complete nonsense challenge as it doesn't offer any protection at all.
+			* The point of this challenge is to stop spoofed source UDP DDoS reflection attacks,
+			* so it doesn't really matter if one single server out of thousands doesn't
+			* implement this correctly. If you do happen to use this on thousands of servers
+			* though then please do implement it correctly.
+			*/
+			int32_t realChallengeNr = *(int32_t *)&packet->from.ip ^ 0x55AADD88;
+			if(challengeNr != realChallengeNr)
+			{
+				SendA2S_PlayerChallenge(packet, realChallengeNr);
+				RETURN_META_VALUE(MRES_SUPERCEDE, true);
+			}
+
+			SendA2S_Player(packet);
+
+			RETURN_META_VALUE(MRES_SUPERCEDE, true);
+
+			break;
+		}
 	}
 
 	RETURN_META_VALUE(MRES_IGNORED, false);
@@ -515,6 +628,10 @@ bool A2SQCache::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, boo
 
 	g_pSvVisibleMaxPlayers = g_pCVar->FindVar("sv_visiblemaxplayers");
 	g_pSvTags = g_pCVar->FindVar("sv_tags");
+	g_pSvEnableOldQueries = g_pCVar->FindVar("sv_enableoldqueries");
+#if SOURCE_ENGINE >= SE_CSGO
+	g_SvHostNameStore = g_pCVar->FindVar("host_name_store");
+#endif
 
 	return true;
 }
@@ -589,10 +706,10 @@ void A2SQCache::SDK_OnAllLoaded()
 #endif
 
 	info.iUDPPort = iserver->GetUDPPort();
-	info.nNewFlags |= 0x80;
+	info.nNewFlags |= S2A_EXTRA_DATA_HAS_GAME_PORT;
 
 	info.iGameID = info.iSteamAppID;
-	info.nNewFlags |= 0x01;
+	info.nNewFlags |= S2A_EXTRA_DATA_GAMEID;
 
 	UpdateQueryCache();
 
