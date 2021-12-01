@@ -432,15 +432,17 @@ void SendA2S_Info(netpacket_t * packet)
 		buf.PutShort( LittleWord( iserver->GetUDPPort() ) );
 	}
 
+#if SOURCE_ENGINE <= SE_CSGO
 	if ( g_QueryCache.info.nNewFlags & S2A_EXTRA_DATA_HAS_STEAMID )
 	{
-		buf.PutShort( LittleWord( g_QueryCache.info.iSteamID ) );
+		buf.PutInt64( LittleWord( g_QueryCache.info.iSteamID ) );
 	}
+#endif
 
 	if ( g_QueryCache.info.nNewFlags & S2A_EXTRA_DATA_HAS_SPECTATOR_DATA )
 	{
 		buf.PutShort( LittleWord( g_QueryCache.info.iHLTVUDPPort ) );
-		buf.PutString( g_SvHostNameStore->GetBool() ? iserver->GetName() : g_QueryCache.info.aHLTVName );
+		buf.PutString( g_SvHostNameStore->GetBool() ? g_QueryCache.info.aHLTVName : "Counter-Strike: Source" );
 	}
 
 	if ( g_QueryCache.info.nNewFlags & S2A_EXTRA_DATA_HAS_GAMETAG_DATA )
