@@ -89,6 +89,7 @@ A2SQCacheTimer g_A2SQCacheTimer;
 SMEXT_LINK(&g_A2SQCache);
 
 ConVar *g_SvLogging = CreateConVar("sv_qcache_logging", "0", FCVAR_NOTIFY, "Log connection checks.");
+ConVar *g_SvPacketSizeCheck = CreateConVar("sv_qcache_packet_size_check", "1", FCVAR_NOTIFY, "Check correct packet sizes.");
 ConVar *g_SvIPRateLimit = CreateConVar("sv_qcache_iprate_limit", "1", FCVAR_NOTIFY, "Temporarily ban spam requests.");
 ConVar *g_SvValidateChallenge = CreateConVar("sv_qcache_validate_info_challenge", "1", FCVAR_NOTIFY, "Check if the a2s_info challenge is valid.");
 ConVar *g_SvGameDesc = CreateConVar("sv_gamedesc_override", "default", FCVAR_NOTIFY, "Overwrite the default game description. Set to 'default' to keep default description.");
@@ -472,6 +473,11 @@ bool Hook_ProcessConnectionlessPacket(netpacket_t * packet)
 	{
 		case A2S_INFO:
 		{
+			if (g_SvPacketSizeCheck->GetBool() && packet->size < 25)
+			{
+				RETURN_META_VALUE(MRES_SUPERCEDE, false);
+			}
+
 			if (g_SvIPRateLimit->GetBool() && !CIPRateLimit__CheckIP(s_queryRateChecker, packet->from))
 			{
 				RETURN_META_VALUE(MRES_SUPERCEDE, false);
@@ -494,6 +500,11 @@ bool Hook_ProcessConnectionlessPacket(netpacket_t * packet)
 		}
 		case A2S_PLAYER:
 		{
+			if (g_SvPacketSizeCheck->GetBool() && packet->size != 5 && packet->size != 9)
+			{
+				RETURN_META_VALUE(MRES_SUPERCEDE, false);
+			}
+
 			if (g_SvIPRateLimit->GetBool() && !CIPRateLimit__CheckIP(s_queryRateChecker, packet->from))
 			{
 				RETURN_META_VALUE(MRES_SUPERCEDE, false);
