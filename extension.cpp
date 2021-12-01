@@ -89,6 +89,8 @@ A2SQCacheTimer g_A2SQCacheTimer;
 SMEXT_LINK(&g_A2SQCache);
 
 ConVar *g_SvLogging = CreateConVar("sv_qcache_logging", "0", FCVAR_NOTIFY, "Log connection checks.");
+ConVar *g_SvIPRateLimit = CreateConVar("sv_qcache_iprate_limit", "1", FCVAR_NOTIFY, "Temporarily ban spam requests.");
+ConVar *g_SvValidateChallenge = CreateConVar("sv_qcache_validate_info_challenge", "1", FCVAR_NOTIFY, "Check if the a2s_info challenge is valid.");
 ConVar *g_SvGameDesc = CreateConVar("sv_gamedesc_override", "default", FCVAR_NOTIFY, "Overwrite the default game description. Set to 'default' to keep default description.");
 ConVar *g_SvMapName = CreateConVar("sv_mapname_override", "default", FCVAR_NOTIFY, "Overwrite the map name. Set to 'default' to keep default name.");
 ConVar *g_SvCountBotsInfo = CreateConVar("sv_count_bots_info", "1", FCVAR_NOTIFY, "Display bots as players in the a2s_info server query. Enable = '1', Disable = '0'");
@@ -466,29 +468,22 @@ bool Hook_ProcessConnectionlessPacket(netpacket_t * packet)
 
 	switch ( c )
 	{
-		case 0:
-		{
-			if(!CIPRateLimit__CheckIP(s_queryRateChecker, packet->from))
-			{
-				RETURN_META_VALUE(MRES_SUPERCEDE, false);
-			}
-
-			RETURN_META_VALUE(MRES_SUPERCEDE, false);
-			break;
-		}
 		case A2S_INFO:
 		{
-			if(!CIPRateLimit__CheckIP(s_queryRateChecker, packet->from))
+			if (g_SvIPRateLimit->GetBool() && !CIPRateLimit__CheckIP(s_queryRateChecker, packet->from))
 			{
 				RETURN_META_VALUE(MRES_SUPERCEDE, false);
 			}
 
-			// Validate challenge
-			char nugget[ 64 ];
-			if ( !msg.ReadString( nugget, sizeof( nugget ) ) )
-				RETURN_META_VALUE(MRES_SUPERCEDE, true);
-			if ( !ValidInfoChallenge( packet->from, nugget ) )
-				RETURN_META_VALUE(MRES_SUPERCEDE, true);
+			if (g_SvValidateChallenge->GetBool())
+			{
+				// Validate challenge
+				char nugget[ 64 ];
+				if ( !msg.ReadString( nugget, sizeof( nugget ) ) )
+					RETURN_META_VALUE(MRES_SUPERCEDE, true);
+				if ( !ValidInfoChallenge( packet->from, nugget ) )
+					RETURN_META_VALUE(MRES_SUPERCEDE, true);
+			}
 
 			SendA2S_Info(packet);
 
@@ -497,7 +492,7 @@ bool Hook_ProcessConnectionlessPacket(netpacket_t * packet)
 		}
 		case A2S_PLAYER:
 		{
-			if(!CIPRateLimit__CheckIP(s_queryRateChecker, packet->from))
+			if (g_SvIPRateLimit->GetBool() && !CIPRateLimit__CheckIP(s_queryRateChecker, packet->from))
 			{
 				RETURN_META_VALUE(MRES_SUPERCEDE, false);
 			}

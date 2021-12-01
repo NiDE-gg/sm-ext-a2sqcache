@@ -39,9 +39,9 @@
 
 /* Basic information exposed publicly */
 #define SMEXT_CONF_NAME			"A2SQCache"
-#define SMEXT_CONF_DESCRIPTION	"A2S_INFO+PLAYER cache"
-#define SMEXT_CONF_VERSION		"1.0"
-#define SMEXT_CONF_AUTHOR		"BotoX"
+#define SMEXT_CONF_DESCRIPTION	"A2S_INFO + A2S_PLAYER cache"
+#define SMEXT_CONF_VERSION		"1.1"
+#define SMEXT_CONF_AUTHOR		"BotoX, maxime1907"
 #define SMEXT_CONF_URL			"https://git.botox.bz/CSSZombieEscape/sm-ext-A2SQCache"
 #define SMEXT_CONF_LOGTAG		"A2SQCACHE"
 #define SMEXT_CONF_LICENSE		"GPL"
