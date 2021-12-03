@@ -13,6 +13,62 @@
 #include "tier0/platform.h"
 #include "appframework/IAppSystem.h"
 
+// FIX FOR CSGO SDK THAT DOESNT DEFINES LittleQWord
+
+#ifndef QWordSwap
+	#ifdef _DEBUG
+		#if !defined( PLAT_COMPILE_TIME_ASSERT )
+		#define PLAT_COMPILE_TIME_ASSERT( pred )	switch(0){case 0:case pred:;}
+		#endif
+	#else
+		#if !defined( PLAT_COMPILE_TIME_ASSERT )
+		#define PLAT_COMPILE_TIME_ASSERT( pred )
+		#endif
+	#endif
+
+	template <typename T>
+	inline T QWordSwapC( T dw )
+	{
+		// Assert sizes passed to this are already correct, otherwise
+		// the cast to uint64 * below is unsafe and may have wrong results 
+		// or even crash.
+		PLAT_COMPILE_TIME_ASSERT( sizeof( dw ) == sizeof(uint64) );
+
+		uint64 temp;
+
+		temp  =   *((uint64 *)&dw) 				         >> 56;
+		temp |= ((*((uint64 *)&dw) & 0x00FF000000000000ull) >> 40);
+		temp |= ((*((uint64 *)&dw) & 0x0000FF0000000000ull) >> 24);
+		temp |= ((*((uint64 *)&dw) & 0x000000FF00000000ull) >> 8);
+		temp |= ((*((uint64 *)&dw) & 0x00000000FF000000ull) << 8);
+		temp |= ((*((uint64 *)&dw) & 0x0000000000FF0000ull) << 24);
+		temp |= ((*((uint64 *)&dw) & 0x000000000000FF00ull) << 40);
+		temp |= ((*((uint64 *)&dw) & 0x00000000000000FFull) << 56);
+
+		return *((T*)&temp);
+	}
+
+	// No ASM implementation for this yet
+	#define QWordSwap QWordSwapC
+
+	//-------------------------------------
+	// The typically used methods.
+	//-------------------------------------
+
+	#if (defined( _SGI_SOURCE ) || defined( _X360 )) || defined( PLATFORM_X360 ) && !defined CUSTOM_PLAT_BIG_ENDIAN
+	#define	CUSTOM_PLAT_BIG_ENDIAN 1
+	#else
+	#define CUSTOM_PLAT_LITTLE_ENDIAN 1
+	#endif
+
+	#if defined(CUSTOM_PLAT_LITTLE_ENDIAN)
+	#define LittleQWord( val )			( val )
+	#elif defined(CUSTOM_PLAT_BIG_ENDIAN)
+	#define LittleQWord( val )			QWordSwap( val )
+	#else
+	inline uint64 LittleQWord( uint64 val )	{ int test = 1; return ( *(char *)&test == 1 ) ? val : QWordSwap( val ); }
+	#endif
+#endif
 
 // This is the packet payload without any header bytes (which are attached for actual sending)
 #define	NET_MAX_PAYLOAD			( 262144 - 4)	// largest message we can send in bytes

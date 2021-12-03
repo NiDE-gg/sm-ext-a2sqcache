@@ -98,6 +98,8 @@ ConVar *g_SvCountBotsInfo = CreateConVar("sv_count_bots_info", "1", FCVAR_NOTIFY
 ConVar *g_SvCountBotsPlayer = CreateConVar("sv_count_bots_player", "0", FCVAR_NOTIFY, "Display bots as players in the a2s_player server query. Enable = '1', Disable = '0'");
 #if SOURCE_ENGINE < SE_CSGO
 ConVar *g_SvHostNameStore = CreateConVar("host_name_store", "1", FCVAR_NOTIFY, "Whether hostname is recorded in game events and GOTV.");
+#else
+ConVar *g_SvHostNameStore = NULL;
 #endif
 ConVar *g_pSvVisibleMaxPlayers = NULL;
 ConVar *g_pSvTags = NULL;
