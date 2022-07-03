@@ -10,7 +10,11 @@ for cxx in builder.targets:
     if not cxx.target.arch in sdk.platformSpec[cxx.target.platform]:
       continue
 
-    binary = SM.HL2Library(builder, cxx, projectName + '.ext.' + sdk.ext, sdk)
+    sdk.ext = "." + sdk.ext
+    if "sdk2013" in sdk.ext:
+      sdk.ext = ""
+
+    binary = SM.HL2Library(builder, cxx, projectName + ".ext" + sdk.ext, sdk)
 
     binary.compiler.defines += [
       'HAVE_STRING_H',
